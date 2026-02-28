@@ -47,7 +47,9 @@ async function runStdio(): Promise<void> {
 
 async function runHttp(): Promise<void> {
   const app = express();
-  app.use(express.json());
+  // express.json() is applied per-route below — NOT globally.
+  // The legacy SSE /message route needs the raw body stream, so it must not
+  // be pre-parsed by this middleware.
 
   // ── StreamableHTTP — modern transport, works with n8n ────────────────────
   // Session-aware: POST (initialize) and GET (SSE stream) share the same
@@ -88,9 +90,9 @@ async function runHttp(): Promise<void> {
     }
   };
 
-  app.post("/mcp", handleStreamable);
+  app.post("/mcp", express.json(), handleStreamable);
   app.get("/mcp", handleStreamable);
-  app.delete("/mcp", async (req: Request, res: Response) => {
+  app.delete("/mcp", express.json(), async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     if (sessionId) {
       const transport = streamableSessions.get(sessionId);
