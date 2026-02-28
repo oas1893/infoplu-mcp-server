@@ -90,8 +90,19 @@ async function runHttp(): Promise<void> {
     }
   };
 
+  app.head("/mcp", (_req: Request, res: Response) => {
+    res.status(200).end();
+  });
   app.post("/mcp", express.json(), handleStreamable);
-  app.get("/mcp", handleStreamable);
+  app.get("/mcp", (req: Request, res: Response) => {
+    // n8n probes with GET but no Accept: text/event-stream — return 200 and let
+    // the POST-based StreamableHTTP flow handle the actual MCP session.
+    if (!req.headers.accept?.includes("text/event-stream")) {
+      res.status(200).end();
+      return;
+    }
+    handleStreamable(req, res);
+  });
   app.delete("/mcp", express.json(), async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     if (sessionId) {
