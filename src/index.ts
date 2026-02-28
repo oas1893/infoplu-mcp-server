@@ -50,15 +50,36 @@ async function runHttp(): Promise<void> {
   app.use(express.json());
 
   // ── StreamableHTTP — modern transport, works with n8n ────────────────────
-  // Each request creates its own server+transport pair (stateless).
-  // This avoids session state complexity and works perfectly for read-only tools.
+  // Session-aware: POST (initialize) and GET (SSE stream) share the same
+  // transport instance, looked up by the mcp-session-id header n8n sends.
+  const streamableSessions = new Map<string, StreamableHTTPServerTransport>();
+
   const handleStreamable = async (req: Request, res: Response): Promise<void> => {
     try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      // Reuse existing session (e.g. the GET that follows an initializing POST)
+      if (sessionId && streamableSessions.has(sessionId)) {
+        const transport = streamableSessions.get(sessionId)!;
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // New session — create server + transport, store once session ID is known
       const mcpServer = createServer();
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id) => {
+          streamableSessions.set(id, transport);
+        },
       });
-      res.on("close", () => { transport.close().catch(() => {}); });
+
+      res.on("close", () => {
+        for (const [id, t] of streamableSessions.entries()) {
+          if (t === transport) { streamableSessions.delete(id); break; }
+        }
+      });
+
       await mcpServer.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
@@ -69,7 +90,14 @@ async function runHttp(): Promise<void> {
 
   app.post("/mcp", handleStreamable);
   app.get("/mcp", handleStreamable);
-  app.delete("/mcp", (_req: Request, res: Response) => res.status(200).end());
+  app.delete("/mcp", async (req: Request, res: Response) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (sessionId) {
+      const transport = streamableSessions.get(sessionId);
+      if (transport) { await transport.close().catch(() => {}); streamableSessions.delete(sessionId); }
+    }
+    res.status(200).end();
+  });
 
   // ── Legacy SSE — kept for backward compatibility ──────────────────────────
   const sseTransports = new Map<string, SSEServerTransport>();
